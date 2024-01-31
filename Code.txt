@@ -1,0 +1,398 @@
+var table = ee.FeatureCollection("users/odonaldrfred9/dilei/DILEIHEBING5"),
+    shaanxi = ee.FeatureCollection("users/odonaldrfred9/shaanxi");
+var roi = ee.FeatureCollection(shaanxi);
+Map.centerObject(roi, 6.5);
+//Map.addLayer(roi, {color: "red"}, "roi");
+/*
+0:Corpland
+1:Construction
+2:Forest
+3:Grassland
+4:Water
+5:Unusedland   */    
+var sampleData = ee.FeatureCollection(table);
+
+//Landsat8 SR De-clouding data
+function rmCloud(image) {
+  var cloudShadowBitMask = (1 << 3);
+  var cloudsBitMask = (1 << 5);
+  var qa = image.select("pixel_qa");
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                 .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+//Zoom
+function scaleImage(image) {
+  var time_start = image.get("system:time_start");
+  image = image.multiply(0.0001);
+  image = image.set("system:time_start", time_start);
+  return image;
+}
+//NDVI
+function NDVI(image) {
+  return image.addBands(
+    image.normalizedDifference(["B5", "B4"])
+         .rename("NDVI"));
+}
+//NDWI
+function NDWI(image) {
+  return image.addBands(
+    image.normalizedDifference(["B3", "B5"])
+         .rename("NDWI"));
+}
+//NDBI
+function NDBI(image) {
+  return image.addBands(
+    image.normalizedDifference(["B6", "B5"])
+         .rename("NDBI"));
+}
+//EVI
+function EVI(image){
+  var evi = image.expression('2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
+        'NIR' : image.select('B5'),
+        'RED' : image.select('B4'),
+        'BLUE': image.select('B2')
+      }).float();
+      return image.addBands(evi.rename('EVI'));
+    }
+//SAVI
+function SAVI(image){
+  var savi = image.expression('1.7 * (NIR - RED) / (NIR + RED + 0.7)', {
+        'NIR' : image.select('B5'),
+        'RED' : image.select('B4')
+      }).float();
+      return image.addBands(savi.rename('SAVI'));
+    }
+//NDMI
+function NDMI(image){
+  var ndmi = image.expression('(NIR - MIR1) / (NIR + MIR1)', {
+        'NIR' : image.select('B5'),
+        'MIR1' : image.select('B6')
+      }).float();
+      return image.addBands(ndmi.rename('NDMI'));
+    }
+//MNDWI
+function MNDWI(image) {
+  return image.addBands(
+    image.normalizedDifference(["B3", "B6"])
+         .rename("MNDWI"));
+}
+//NDISI
+function NDISI(image){
+  var ndisi = image.expression('(TIR - (MNDWI+ NIR + MIR1) / 3) / (TIR + (MNDWI + NIR + MIR1)/3 )',{
+        'TIR' : image.select('B10'),
+        'NIR' : image.select('B5'),
+        'MNDWI':image.select('MNDWI'),
+        'MIR1' : image.select('B6')
+      }).float();
+      return image.addBands(ndisi.rename('NDISI'));
+    }
+
+var l8Col1 = ee.ImageCollection("LANDSAT/LC08/C01/T1_SR")
+              .filterBounds(roi)
+              .filterDate("2019-6-1", "2021-9-1");
+var l8Col  = l8Col1
+              .filter(ee.Filter.calendarRange(6,9,"month"))
+              .map(rmCloud)
+              .map(scaleImage)
+              .map(NDVI)
+              .map(NDWI)
+              .map(NDBI)
+              .map(EVI)
+              .map(SAVI)
+              .map(NDMI)
+              .map(MNDWI)
+              .map(NDISI);
+              
+//DEM
+var srtm = ee.Image("USGS/SRTMGL1_003");
+var dem = ee.Algorithms.Terrain(srtm);
+var elevation = dem.select("elevation");
+var slope = dem.select("slope");
+//DSM
+var srtm1 = ee.ImageCollection("JAXA/ALOS/AW3D30/V3_2").median();
+var dsm =  srtm1.select("DSM");
+//Climate
+var dataset = ee.ImageCollection("IDAHO_EPSCOR/TERRACLIMATE")
+                  .filterBounds(roi)
+                  .filterDate("2019-6-1", "2021-9-1")
+                  .filter(ee.Filter.calendarRange(6,9,"month"))
+                  .median();
+var wendu = dataset.select("tmmx");
+var jiangshui = dataset.select("pr");
+var zhengsan = dataset.select("aet");
+var shuiqiya = dataset.select("vap");
+//Nightlight
+var nightlights1 = ee.ImageCollection("NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG")
+                  .filterBounds(roi)
+                  .filterDate("2019-6-1", "2021-9-1")
+                  .filter(ee.Filter.calendarRange(6,9,"month"))
+                  .median();
+var nightlights = nightlights1.select("avg_rad");
+//Population
+var population = ee.ImageCollection("JRC/GHSL/P2016/POP_GPW_GLOBE_V1")
+                 .filterBounds(roi)
+                 .filterDate("2015")
+                 .median();
+var bands = [
+  "B1", "B2", "B3", "B4", "B5", "B6", "B7",
+  "NDVI", "NDWI", "NDBI","EVI", "SAVI", "NDMI","MNDWI","NDISI","SLOPE", "ELEVATION","DSM",
+  "wendu","jiangshui","zhengsan","shuiqiya","Nightlights","Population"
+];
+var l8Image = l8Col.median()
+                   .addBands(elevation.rename("ELEVATION"))
+                   .addBands(slope.rename("SLOPE"))
+                   .addBands(dsm.rename("DSM"))
+                   .addBands(wendu.rename("wendu"))
+                   .addBands(jiangshui.rename("jiangshui"))
+                   .addBands(zhengsan.rename("zhengsan"))
+                   .addBands(shuiqiya.rename("shuiqiya"))
+                   .addBands(nightlights.rename("Nightlights"))
+                   .addBands(population.rename("Population"))
+                   .clip(roi)
+                   .select(bands);
+
+//Split to generate training data and validation data
+sampleData = sampleData.randomColumn('random');
+var sample_training = sampleData.filter(ee.Filter.lte("random", 0.7)); 
+var sample_validate  = sampleData.filter(ee.Filter.gt("random", 0.7));
+
+//Generate sample data for supervised classification training
+var training = l8Image.sampleRegions({
+  collection: sample_training, 
+  properties: ["class"], 
+  scale: 100,
+  tileScale:2
+});
+//Generate sample data for supervised classification verification
+var validation = l8Image.sampleRegions({
+  collection: sample_validate, 
+  properties: ["class"], 
+  scale: 100,
+  tileScale:2
+});
+
+//Initialize classifier
+var classifier = ee.Classifier.smileCart().setOutputMode('MULTIPROBABILITY').train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+var classifier1 = ee.Classifier.smileRandomForest(1000).setOutputMode('MULTIPROBABILITY').train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+var classifier2 = ee.Classifier.libsvm({
+ kernelType: 'POLY',
+  degree:2,
+  gamma: 0.0001,
+}).setOutputMode('MULTIPROBABILITY').train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+var classifier3 = ee.Classifier.smileGradientTreeBoost(400).setOutputMode('MULTIPROBABILITY').train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+
+//The image data calls classify and uses the training data to train to obtain the classification results.
+var classified = l8Image.classify(classifier);
+var classified1 = l8Image.classify(classifier1);
+var classified2 = l8Image.classify(classifier2);
+var classified3 = l8Image.classify(classifier3);
+var classified4 = classified3.multiply(classified2).multiply(classified1).multiply(classified);
+var classified5 = classified4.arrayProject([0]).arrayFlatten([(['0','1','2','3','4','5'])]);
+var k = ee.Image(1).subtract(classified5.select(['0'])
+       .add(classified5.select(['1'])).add(classified5.select(['2']))
+       .add(classified5.select(['3'])).add(classified5.select(['4']))
+       .add(classified5.select(['5'])));
+var jieguo =ee.Image(1).divide(ee.Image(1).subtract(k)).multiply(classified4);
+var jieguo1 = jieguo.arrayArgmax().arrayProject([0]).arrayFlatten([(['0'])]).select(['0'], ['delei']);
+
+var classifier = ee.Classifier.smileCart().train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+var trainAccuracy = classifier.confusionMatrix();
+
+var classifier1 = ee.Classifier.smileRandomForest(1000).train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+var trainAccuracy1 = classifier1.confusionMatrix();
+
+var classifier2 = ee.Classifier.libsvm({
+ kernelType: 'POLY',
+  degree:2,
+  gamma: 0.0001,         
+}).train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+var trainAccuracy2 = classifier2.confusionMatrix();
+
+var classifier3 = ee.Classifier.smileGradientTreeBoost(400).train({
+  features: training, 
+  classProperty: "class",
+  inputProperties: bands
+});
+var trainAccuracy3 = classifier3.confusionMatrix();
+
+print(trainAccuracy,"CART");
+print(trainAccuracy1,"RF");
+print(trainAccuracy2,"SVM");
+print(trainAccuracy3,"GTB");
+
+//Verify the dataset and call classify for verification analysis to obtain the classification verification results.
+var validated = validation.classify(classifier);
+var validated1 = validation.classify(classifier1);
+var validated2 = validation.classify(classifier2);
+var validated3 = validation.classify(classifier3);
+//Confusion matrix for verification results
+var testAccuracy = validated.errorMatrix("class", "classification");
+print(testAccuracy,"CART");
+print('OA CART', testAccuracy.accuracy());
+print('kappa CART', testAccuracy.kappa());
+print('UA CART', testAccuracy.consumersAccuracy());
+print('PA CART', testAccuracy.producersAccuracy());
+var testAccuracy1 = validated1.errorMatrix("class", "classification");
+print(testAccuracy1,"RF");
+print('OA RF', testAccuracy1.accuracy());
+print('kappa RF', testAccuracy1.kappa());
+print('UA RF', testAccuracy1.consumersAccuracy());
+print('PA RF', testAccuracy1.producersAccuracy());
+var testAccuracy2 = validated2.errorMatrix("class", "classification");
+print(testAccuracy2,"SVM");
+print('OA SVM', testAccuracy2.accuracy());
+print('kappa SVM', testAccuracy2.kappa());
+print('UA SVM', testAccuracy2.consumersAccuracy());
+print('PA SVM', testAccuracy2.producersAccuracy());
+var testAccuracy3 = validated3.errorMatrix("class", "classification");
+print(testAccuracy3,"GTB");
+print('OA GTB', testAccuracy3.accuracy());
+print('kappa GTB', testAccuracy3.kappa());
+print('UA GTB', testAccuracy3.consumersAccuracy());
+print('PA GTB', testAccuracy3.producersAccuracy());
+
+//Export
+var CARTa  = classified.arrayArgmax().arrayProject([0]).arrayFlatten([(['0'])]).select(['0'], ['delei']);
+var RFa    = classified1.arrayArgmax().arrayProject([0]).arrayFlatten([(['0'])]).select(['0'], ['delei']);
+var SVMa   = classified2.arrayArgmax().arrayProject([0]).arrayFlatten([(['0'])]).select(['0'], ['delei']);
+var GTBa   = classified3.arrayArgmax().arrayProject([0]).arrayFlatten([(['0'])]).select(['0'], ['delei']);
+var CART = CARTa.remap([0,1,2,3,4,5], [0,1,2,3,4,5]).rename('dilei');
+var RF   = RFa.remap([0,1,2,3,4,5], [0,1,2,3,4,5]).rename('dilei');
+var SVM  = SVMa.remap([0,1,2,3,4,5], [0,1,2,3,4,5]).rename('dilei');
+var GTB  = GTBa.remap([0,1,2,3,4,5], [0,1,2,3,4,5]).rename('dilei');
+var JG_2   = jieguo1.remap([0,1,2,3,4,5], [0,1,2,3,4,5]).rename('dilei');
+
+Export.image.toDrive({
+  image: CART,
+  description: "Drive-CART ",
+  folder: "Result",
+  fileNamePrefix: "CART",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: RF,
+  description: "Drive-RF",
+  folder: "Result",
+  fileNamePrefix: "RF",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: SVM,
+  description: "Drive-SVM",
+  folder: "GEE_7",
+  fileNamePrefix: "SVM",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: GTB,
+  description: "Drive-GTB",
+  folder: "Result",
+  fileNamePrefix: "GTB",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: JG_2,
+  description: "Drive-JG_2",
+  folder: "Result",
+  fileNamePrefix: "JG_2",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.table.toDrive({
+  collection:sampleData,
+  description: "Drive-sampleData",
+  fileNamePrefix: "sampleData",
+  fileFormat: "SHP",
+  folder: "GEE_7.29"
+});
+
+
+//support probability
+var CARTcertainty   = classified.arraySort().arrayFlatten([(['0','1','2','3','4','5'])]).select('5');
+var RFcertainty   = classified1.arraySort().arrayFlatten([(['0','1','2','3','4','5'])]).select('5');
+var SVMcertainty   = classified2.arraySort().arrayFlatten([(['0','1','2','3','4','5'])]).select('5');
+var GTBcertainty   = classified3.arraySort().arrayFlatten([(['0','1','2','3','4','5'])]).select('5');
+var fusioncertainty = jieguo.arraySort().arrayFlatten([(['0','1','2','3','4','5'])]).select('5');
+Export.image.toDrive({
+  image: CARTcertainty,
+  description: "Drive-CARTcertainty",
+  folder: "support_probability",
+  fileNamePrefix: "CARTcertainty",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: RFcertainty,
+  description: "Drive-RFcertainty",
+  folder: "support_probability",
+  fileNamePrefix: "RFcertainty",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: SVMcertainty,
+  description: "Drive-SVMcertainty",
+  folder: "support_probability",
+  fileNamePrefix: "SVMcertainty",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: GTBcertainty,
+  description: "Drive-GTBcertainty",
+  folder: "support_probability",
+  fileNamePrefix: "GTBcertainty",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
+Export.image.toDrive({
+  image: fusioncertainty,
+  description: "Drive-fusioncertainty ",
+  folder: "support_probability",
+  fileNamePrefix: "fusioncertainty",
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
